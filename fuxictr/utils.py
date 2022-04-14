@@ -64,12 +64,12 @@ def load_dataset_config(config_dir, dataset_id):
     raise RuntimeError('dataset_id={} is not found in config.'.format(dataset_id))
 
 
-def set_logger(params, log_file=None):
+def set_logger(params, log_file=None, eval=False):
     if log_file is None:
         dataset_id = params['dataset_id']
         model_id = params['model_id']
         log_dir = os.path.join(params['model_root'], dataset_id)
-        log_file = os.path.join(log_dir, model_id + '.log')
+        log_file = os.path.join(log_dir, model_id + '.log') if not eval else os.path.join(log_dir, model_id + '.eval.log')
     log_dir = os.path.dirname(log_file)
     os.makedirs(log_dir, exist_ok=True)
 
