@@ -20,6 +20,7 @@ import logging
 import numpy as np
 import gc
 import glob
+from tqdm import tqdm
 
     
 def save_hdf5(data_array, data_path, key="data"):
@@ -63,6 +64,43 @@ def split_train_test(train_ddf=None, valid_ddf=None, test_ddf=None, valid_size=0
     if valid_size > 0 or test_size > 0:
         train_ddf = train_ddf.loc[instance_IDs, :].reset_index()
     return train_ddf, valid_ddf, test_ddf
+
+
+def build_timeline_dataset(feature_encoder, train_data=None, split_type="sequential", **kwargs):
+    """ Build feature_map and transform h5 timeline data """
+    # Load csv data
+    train_ddf = feature_encoder.read_csv(train_data)
+    train_ddf['date_hour'] = train_ddf['time_stamp'].map(lambda x: x.split(' ')[0] + '-' + x.split(' ')[1][:2])
+    train_ddf = train_ddf.sort_values(['time_stamp'])
+    timeline_df_list = dict()
+    for date_hour, group_df in train_ddf.groupby("date_hour"):
+        timeline_df_list[date_hour] = group_df
+
+    # Use all date to obtain the feature cols
+    train_ddf = feature_encoder.preprocess(train_ddf)
+    feature_encoder.fit(train_ddf, **kwargs)
+
+    # Transform all timeline dfs.
+    for time_name, timeline_df in tqdm(timeline_df_list.items()):
+        timeline_df = feature_encoder.preprocess(timeline_df)
+        timeline_array = feature_encoder.transform(timeline_df)
+        save_hdf5(timeline_array, os.path.join(feature_encoder.data_dir, 'train_{}.h5'.format(time_name)))
+
+    # # fit and transform train_ddf
+    # train_ddf = feature_encoder.preprocess(train_ddf)
+    # train_array = feature_encoder.fit_transform(train_ddf, **kwargs)
+    # block_size = int(kwargs.get("data_block_size", 0))
+    # if block_size > 0:
+    #     block_id = 0
+    #     for idx in range(0, len(train_array), block_size):
+    #         save_hdf5(train_array[idx:(idx + block_size), :], os.path.join(feature_encoder.data_dir, 'train_part_{}.h5'.format(block_id)))
+    #         block_id += 1
+    # else:
+    #     save_hdf5(train_array, os.path.join(feature_encoder.data_dir, 'train.h5'))
+    # del train_array, train_ddf
+    # gc.collect()
+
+    logging.info("Transform csv timeline data to h5 done.")
 
 
 def build_dataset(feature_encoder, train_data=None, valid_data=None, test_data=None, valid_size=0, 
