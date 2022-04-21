@@ -159,6 +159,27 @@ def build_dataset(feature_encoder, train_data=None, valid_data=None, test_data=N
     logging.info("Transform csv data to h5 done.")
 
 
+def h5_train_generator(train_data=None, batch_size=32, shuffle=True, **kwargs):
+    """This only load training data."""
+    logging.info("Loading data...")
+    if kwargs.get("data_block_size", 0) > 0: 
+        from ..pytorch.data_generator import DataBlockGenerator as DataGenerator
+    else:
+        from ..pytorch.data_generator import DataGenerator
+
+    train_gen = None
+    train_blocks = glob.glob(train_data)
+    assert len(train_blocks) > 0, "invalid data files or paths."
+    if len(train_blocks) > 1:
+        train_blocks.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+    train_gen = DataGenerator(train_blocks, batch_size=batch_size, shuffle=shuffle, **kwargs)
+    logging.info("Train samples: total/{:d}, pos/{:.0f}, neg/{:.0f}, ratio/{:.2f}%, blocks/{:.0f}" \
+                    .format(train_gen.num_samples, train_gen.num_positives, train_gen.num_negatives,
+                            100. * train_gen.num_positives / train_gen.num_samples, train_gen.num_blocks))
+    logging.info("Loading train data done.")
+    return train_gen
+
+
 def h5_generator(feature_map, stage="both", train_data=None, valid_data=None, test_data=None,
                  batch_size=32, shuffle=True, **kwargs):
     logging.info("Loading data...")

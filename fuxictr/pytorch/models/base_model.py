@@ -161,7 +161,25 @@ class BaseModel(nn.Module):
             logging.info("Early stopping at epoch={:g}".format(epoch))
         if not self._save_best_only:
             self.save_weights(self.checkpoint)
-            
+
+    def fit_generator_stream(self, data_generator, epochs=1, verbose=0,
+        max_gradient_norm=10., **kwargs):
+        """Customized training with stream data."""
+        self._max_gradient_norm = max_gradient_norm
+        self._best_metric = np.Inf if self._monitor_mode == "min" else -np.Inf
+        self._stopping_steps = 0
+        self._total_batches = 0
+        self._batches_per_epoch = len(data_generator)
+        self._every_x_batches = int(np.ceil(self._every_x_epochs * self._batches_per_epoch))
+        self._stop_training = False
+        self._verbose = verbose
+        
+        logging.info("Start training: {} batches/epoch".format(self._batches_per_epoch))
+        for epoch in range(epochs):
+            epoch_loss = self.train_one_epoch_custom(data_generator, epoch)
+            logging.info("Train loss: {:.6f}".format(epoch_loss))
+        logging.info("Current data block data finished.")
+
     def fit_generator(self, data_generator, epochs=1, validation_data=None,
                       verbose=0, max_gradient_norm=10., **kwargs):
         """
@@ -193,6 +211,22 @@ class BaseModel(nn.Module):
             else:
                 logging.info("************ Epoch={} end ************".format(epoch + 1))
         logging.info("Training finished.")
+
+    def train_one_epoch_custom(self, data_generator, epoch):
+        epoch_loss = 0
+        self.train()
+        batch_iterator = data_generator
+        if self._verbose > 0:
+            from tqdm import tqdm
+            batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout)
+        for batch_index, batch_data in enumerate(batch_iterator):
+            self.optimizer.zero_grad()
+            loss = self.get_total_loss(batch_data)
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
+            self.optimizer.step()
+            epoch_loss += loss.item()
+        return epoch_loss / self._batches_per_epoch
 
     def train_one_epoch(self, data_generator, epoch):
         epoch_loss = 0
