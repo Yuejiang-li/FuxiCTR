@@ -66,7 +66,73 @@ def split_train_test(train_ddf=None, valid_ddf=None, test_ddf=None, valid_size=0
     return train_ddf, valid_ddf, test_ddf
 
 
-def build_timeline_dataset(feature_encoder, train_data=None, split_type="sequential", **kwargs):
+def build_duration_dataset(feature_encoder, train_data=None, start_time=None, end_time=None, **kwargs):
+    """Build feature_map and transform h5 data with certain time period."""
+    # Load csv data
+    train_ddf = feature_encoder.read_csv(train_data)
+    train_ddf['date_hour'] = train_ddf['time_stamp'].map(lambda x: x.split(' ')[0] + '-' + x.split(' ')[1][:2])
+    train_ddf = train_ddf.sort_values(['time_stamp'])
+
+    # Keep the data within start_time and end_time
+    if start_time is None:
+        start_time = train_ddf['date_hour'].min()
+    if end_time is None:
+        end_time = train_ddf['date_hour'].max()
+    valid_train_ddf = train_ddf[(train_ddf['date_hour'] >= start_time) & (train_ddf['date_hour'] <= end_time)]
+    
+    # Use all date to obtain the feature cols
+    train_ddf = feature_encoder.preprocess(train_ddf)
+    feature_encoder.fit(train_ddf, **kwargs)
+
+    # Transform the valid data only.
+    valid_train_ddf = feature_encoder.preprocess(valid_train_ddf)
+    valid_train_array = feature_encoder.transform(valid_train_ddf)
+    save_hdf5(valid_train_array, os.path.join(feature_encoder.data_dir, 'train.h5'))
+
+
+def build_pretrain_timeline_dataset(feature_encoder, train_data=None, pretrain_start_time=None,
+    pretrain_end_time=None, timeline_start_time=None, timeline_end_time=None, **kwargs):
+    # Load csv data
+    train_ddf = feature_encoder.read_csv(train_data)
+    train_ddf['date_hour'] = train_ddf['time_stamp'].map(lambda x: x.split(' ')[0] + '-' + x.split(' ')[1][:2])
+    train_ddf = train_ddf.sort_values(['time_stamp'])
+    if pretrain_start_time is None:
+        pretrain_start_time = train_ddf['date_hour'].min()
+    if pretrain_end_time is None:
+        pretrain_end_time = train_ddf['date_hour'].max()
+    if timeline_start_time is None:
+        timeline_start_time = train_ddf['date_hour'].min()
+    if timeline_end_time is None:
+        timeline_end_time = train_ddf['date_hour'].max()
+    
+    # pretarin dataframe
+    pretrain_df = train_ddf[(train_ddf['date_hour'] >= pretrain_start_time) & (train_ddf['date_hour'] <= pretrain_end_time)]
+    
+    # timeline dataframe
+    timeline_df_list = dict()
+    for date_hour, group_df in train_ddf.groupby("date_hour"):
+        if timeline_start_time <= date_hour <= timeline_end_time:
+            timeline_df_list[date_hour] = group_df
+
+    # fit feature_cols with all data.
+    train_ddf = feature_encoder.preprocess(train_ddf)
+    feature_encoder.fit(train_ddf, **kwargs)
+
+    # Transform pretrain data
+    pretrain_df = feature_encoder.preprocess(pretrain_df)
+    pretrain_array = feature_encoder.transform(pretrain_df)
+    save_hdf5(pretrain_array, os.path.join(feature_encoder.data_dir, 'pre_train.h5'))
+
+    # Transform timeline data
+    for time_name, timeline_df in tqdm(timeline_df_list.items()):
+        timeline_df = feature_encoder.preprocess(timeline_df)
+        timeline_array = feature_encoder.transform(timeline_df)
+        save_hdf5(timeline_array, os.path.join(feature_encoder.data_dir, 'train_{}.h5'.format(time_name)))
+
+    logging.info("Transform csv timeline data to h5 done.")
+
+
+def build_timeline_dataset(feature_encoder, train_data=None, start_time=None, end_time=None, **kwargs):
     """ Build feature_map and transform h5 timeline data """
     # Load csv data
     train_ddf = feature_encoder.read_csv(train_data)

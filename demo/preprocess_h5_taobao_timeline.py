@@ -10,7 +10,7 @@ import logging
 if __name__ == '__main__':
     # Load params from config files
     config_dir = 'taobao_all_config'
-    dataset_id = 'taobao_timeline'
+    dataset_id = 'taobao_pretrain_timeline'
     params = load_dataset_config(config_dir, dataset_id)
 
     # set up logger and random seed
@@ -22,5 +22,10 @@ if __name__ == '__main__':
                                     label_col=params["label_col"],
                                     dataset_id=dataset_id, 
                                     data_root=params["data_root"])
-    datasets.build_timeline_dataset(feature_encoder, 
-                        train_data=params["train_data"])
+    
+    datasets.build_pretrain_timeline_dataset(feature_encoder, 
+                        train_data=params["train_data"],
+                        pretrain_start_time=params['pretrain_start_time'],
+                        pretrain_end_time=params['pretrain_end_time'],
+                        timeline_start_time=params['timeline_start_time'],
+                        timeline_end_time=params['timeline_end_time'])
