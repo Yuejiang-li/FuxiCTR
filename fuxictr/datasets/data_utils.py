@@ -107,7 +107,10 @@ def build_pretrain_timeline_dataset(feature_encoder, train_data=None, pretrain_s
     
     # pretarin dataframe
     pretrain_df = train_ddf[(train_ddf['date_hour'] >= pretrain_start_time) & (train_ddf['date_hour'] <= pretrain_end_time)]
-    
+    pretrain_df = pretrain_df.reset_index()
+    # Split valid set.
+    pretrain_df, prevalid_df, _ = split_train_test(pretrain_df, None, None, 0.2, 0, 'random')
+
     # timeline dataframe
     timeline_df_list = dict()
     for date_hour, group_df in train_ddf.groupby("date_hour"):
@@ -122,6 +125,9 @@ def build_pretrain_timeline_dataset(feature_encoder, train_data=None, pretrain_s
     pretrain_df = feature_encoder.preprocess(pretrain_df)
     pretrain_array = feature_encoder.transform(pretrain_df)
     save_hdf5(pretrain_array, os.path.join(feature_encoder.data_dir, 'pre_train.h5'))
+    prevalid_df = feature_encoder.preprocess(prevalid_df)
+    prevalid_array = feature_encoder.transform(prevalid_df)
+    save_hdf5(prevalid_array, os.path.join(feature_encoder.data_dir, 'pre_valid.h5'))
 
     # Transform timeline data
     for time_name, timeline_df in tqdm(timeline_df_list.items()):
