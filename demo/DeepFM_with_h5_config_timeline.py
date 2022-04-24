@@ -60,6 +60,10 @@ if __name__ == '__main__':
 
     # Build Model
     model = DeepFM(feature_map, **params)
+    pretrain_model = params.get("pretrain_model", None)
+    if pretrain_model is not None:
+        logging.info("Load pretrained model from {}".format(pretrain_model))
+        model.load_weights(pretrain_model)
 
     # Loop over all timeline datasets chronologically
     start_time = datetime.now()
