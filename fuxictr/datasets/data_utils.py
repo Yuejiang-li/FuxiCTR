@@ -90,12 +90,19 @@ def build_duration_dataset(feature_encoder, train_data=None, start_time=None, en
     save_hdf5(valid_train_array, os.path.join(feature_encoder.data_dir, 'train.h5'))
 
 
-def build_pretrain_timeline_dataset(feature_encoder, train_data=None, pretrain_start_time=None,
+def build_pretrain_timeline_dataset(feature_encoder, dataset_name, train_data=None, pretrain_start_time=None,
     pretrain_end_time=None, timeline_start_time=None, timeline_end_time=None, **kwargs):
     # Load csv data
     train_ddf = feature_encoder.read_csv(train_data)
-    train_ddf['date_hour'] = train_ddf['time_stamp'].map(lambda x: x.split(' ')[0] + '-' + x.split(' ')[1][:2])
-    train_ddf = train_ddf.sort_values(['time_stamp'])
+    if dataset_name == "taobao":
+        train_ddf['date_hour'] = train_ddf['time_stamp'].map(lambda x: x.split(' ')[0] + '-' + x.split(' ')[1][:2])
+        train_ddf = train_ddf.sort_values(['time_stamp'])
+    elif dataset_name == "avazu":
+        train_ddf['date_hour'] = train_ddf['hour'].map(lambda x: str(x)[2:4] + '-' + str(x)[4:6] + '-' + str(x)[6:8])
+        train_ddf = train_ddf.sort_values(['hour'])
+    else:
+        raise ValueError("Unknown dataset: {}".format(dataset_name))
+
     if pretrain_start_time is None:
         pretrain_start_time = train_ddf['date_hour'].min()
     if pretrain_end_time is None:
