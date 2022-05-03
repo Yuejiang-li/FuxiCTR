@@ -77,7 +77,12 @@ if __name__ == '__main__':
     pretrain_model = params.get("pretrain_model", None)
     if pretrain_model is not None:
         logging.info("Load pretrained model from {}".format(pretrain_model))
-        model.load_weights(pretrain_model)
+        if hasattr(model, 'load_pretrain'):
+            logging.info('Find implemented load_pretrain.')
+            model.load_pretrain(pretrain_model)
+        else:
+            logging.info('Not find implemented load_pretrain.')
+            model.load_weights(pretrain_model)
 
     # Loop over all timeline datasets chronologically
     start_time = datetime.now()
