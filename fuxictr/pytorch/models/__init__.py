@@ -8,7 +8,7 @@ from .FwFM import FwFM
 from .PNN import PNN
 from .FNN import FNN
 from .NFM import NFM
-from .DCN import DCN
+from .DCN import DCN, DCNHard, DCNAdaMoE, DCNMoE, DCNIADM
 from .DCNv2 import DCNv2
 from .xDeepFM import xDeepFM
 from .AutoInt import AutoInt

@@ -14,11 +14,12 @@
 # limitations under the License.
 # =========================================================================
 
+import sys
 import torch
 from torch import nn
 from fuxictr.pytorch.models import BaseModel
 from fuxictr.pytorch.layers import EmbeddingLayer, MLP_Layer, CrossNet
-
+import logging
 
 class DCN(BaseModel):
     def __init__(self, 
@@ -80,7 +81,456 @@ class DCN(BaseModel):
         return return_dict
 
 
+class DCNHard(BaseModel):
+    """IncCTR withour KD."""
+    def __init__(self, 
+                 feature_map, 
+                 model_id="DCNHard", 
+                 gpu=-1, 
+                 task="binary_classification",
+                 learning_rate=1e-3, 
+                 embedding_dim=10, 
+                 dnn_hidden_units=[], 
+                 dnn_activations="ReLU",
+                 crossing_layers=3, 
+                 net_dropout=0, 
+                 batch_norm=False, 
+                 embedding_regularizer=None, 
+                 net_regularizer=None, 
+                 num_experts=3,
+                 expert_shape=[],
+                 **kwargs):
+        super(DCNHard, self).__init__(feature_map, 
+                                  model_id=model_id, 
+                                  gpu=gpu, 
+                                  embedding_regularizer=embedding_regularizer, 
+                                  net_regularizer=net_regularizer,
+                                  **kwargs)
+        self.embedding_layer = EmbeddingLayer(feature_map, embedding_dim)
+        input_dim = feature_map.num_fields * embedding_dim
+        self.dnn = MLP_Layer(input_dim=input_dim,
+                             output_dim=None, # output hidden layer
+                             hidden_units=dnn_hidden_units,
+                             hidden_activations=dnn_activations,
+                             output_activation=None, 
+                             dropout_rates=net_dropout, 
+                             batch_norm=batch_norm, 
+                             use_bias=True) \
+                   if dnn_hidden_units else None # in case of only crossing net used
+        self.crossnet = CrossNet(input_dim, crossing_layers)
+        final_dim = input_dim
+        if isinstance(dnn_hidden_units, list) and len(dnn_hidden_units) > 0: # if use dnn
+            final_dim += dnn_hidden_units[-1]
+        self.experts = torch.nn.ModuleList([MLP_Layer(
+            input_dim=final_dim,
+            output_dim=1,
+            hidden_units=expert_shape,
+            hidden_activations='ReLU',
+            output_activation=None,
+            dropout_rates=net_dropout,
+            batch_norm=batch_norm,
+            use_bias=True
+        ) for _ in range(num_experts)])
+        self.softmax = torch.nn.Softmax(dim=-1)
+        self.output_activation = self.get_output_activation(task)
+        self.compile(kwargs["optimizer"], loss=kwargs["loss"], lr=learning_rate)
+        self.reset_parameters()
+        self.model_to_device()
+
+    def experts_forward(self, X, y):
+        feature_emb = self.embedding_layer(X)
+        flat_feature_emb = feature_emb.flatten(start_dim=1)
+        cross_out = self.crossnet(flat_feature_emb)
+        if self.dnn is not None:
+            dnn_out = self.dnn(flat_feature_emb)
+            final_out = torch.cat([cross_out, dnn_out], dim=-1)
+        else:
+            final_out = cross_out
+        
+        # Add experts
+        expert_outs = []
+        for expert in self.experts:
+            if self.output_activation is not None:
+                expert_outs.append(self.output_activation(expert(final_out)))
+            else:
+                expert_outs.append(expert(final_out))
+
+        expert_outs = torch.cat(expert_outs, -1)    # (B, num_experts)
+
+        return expert_outs
+
+    def forward(self, inputs):
+        X, y = self.inputs_to_device(inputs)
+        expert_outs = self.experts_forward(X, y)    # (B, num_experts)
+
+        y_pred = torch.mean(
+            expert_outs,
+            dim=-1,
+            keepdim=True
+        )   # (B, num_experts) -> (B, 1)
+
+        return_dict = {"y_true": y, "y_pred": y_pred}
+        return return_dict
 
 
+class DCNAdaMoE(DCNHard):
+    """AdaMoE is based on hard fusion because it does not work in pretrain stage."""
+    def __init__(self, 
+                 feature_map, 
+                 model_id="DCNAdaMoE", 
+                 gpu=-1, 
+                 task="binary_classification",
+                 learning_rate=1e-3, 
+                 embedding_dim=10, 
+                 dnn_hidden_units=[], 
+                 dnn_activations="ReLU",
+                 crossing_layers=3, 
+                 net_dropout=0, 
+                 batch_norm=False, 
+                 embedding_regularizer=None, 
+                 net_regularizer=None, 
+                 num_experts=3,
+                 expert_shape=[],
+                 decay_weights=0.1,
+                 **kwargs):
 
+        self.num_experts = num_experts
+        self.decay_weights = decay_weights
+        expert_weights = torch.ones((1, num_experts), requires_grad=False)
+        self.expert_weights = torch.div(expert_weights, torch.sum(expert_weights))
+        logging.info("Initial expert_weights: {}".format(self.expert_weights))
+        self.R = torch.zeros((num_experts, num_experts), requires_grad=False)
+        self.d = torch.zeros((num_experts, 1), requires_grad=False)
+
+        super(DCNAdaMoE, self).__init__(feature_map,
+                                        model_id=model_id,
+                                        gpu=gpu,
+                                        task=task,
+                                        learning_rate=learning_rate,
+                                        embedding_dim=embedding_dim,
+                                        dnn_hidden_units=dnn_hidden_units,
+                                        dnn_activations=dnn_activations,
+                                        crossing_layers=crossing_layers,
+                                        net_dropout=net_dropout,
+                                        batch_norm=batch_norm,
+                                        embedding_regularizer=embedding_regularizer,
+                                        net_regularizer=net_regularizer,
+                                        num_experts=num_experts,
+                                        expert_shape=expert_shape,
+                                        **kwargs)
+
+        self.expert_weights = self.expert_weights.to(self.device)
+        self.R = self.R.to(self.device)
+        self.d = self.d.to(self.device)
+
+    def forward(self, inputs):
+        X, y = self.inputs_to_device(inputs)
+        expert_outs = self.experts_forward(X, y)    # (B, num_experts)
+
+        y_pred = torch.mean(
+            expert_outs * self.expert_weights,
+            dim=-1,
+            keepdim=True
+        )   # (B, num_experts) -> (B, 1)
+
+        return_dict = {"y_true": y, "y_pred": y_pred, "expert_outs": expert_outs}
+        return return_dict
+
+    def update_experts_weights(self, y_true, expert_outs):
+        nt = torch.tensor(y_true.shape[0], device=self.device)
+        Y = torch.div(expert_outs, torch.sqrt(nt))    # (B, num_experts)
+        y = torch.div(y_true, torch.sqrt(nt))         # (B, 1)
+        self.R = self.decay_weights * self.R + torch.matmul(Y.t(), Y)
+        self.d = self.decay_weights * self.d + torch.matmul(Y.t(), y)
+        new_experts_weights = torch.matmul(torch.inverse(self.R), self.d)
+        new_experts_weights[new_experts_weights < 0.1] = 0.1
+        new_experts_weights = torch.div(
+            new_experts_weights,
+            torch.sum(new_experts_weights)
+        )
+        self.expert_weights = new_experts_weights.t()
+        self.expert_weights = self.expert_weights.detach()
+        self.R = self.R.detach()
+        self.d = self.d.detach()
+
+    def train_one_epoch(self, data_generator, epoch):
+        epoch_loss = 0
+        self.train()
+        batch_iterator = data_generator
+        if self._verbose > 0:
+            from tqdm import tqdm
+            batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout)
+        for batch_index, batch_data in enumerate(batch_iterator):
+            self.optimizer.zero_grad()
+            return_dict = self.forward(batch_data)
+            y_true_rep = return_dict['y_true'].expand(-1, self.num_experts)
+            loss = torch.functional.F.binary_cross_entropy(return_dict['expert_outs'], y_true_rep, reduction='mean') + \
+                self.add_regularization()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
+            self.optimizer.step()
+            epoch_loss += loss.item()
+            self.on_batch_end(batch_index)
+            if self._stop_training:
+                break
+        return epoch_loss / self._batches_per_epoch
+
+    def train_one_epoch_custom(self, data_generator, epoch):
+        epoch_loss = 0
+        self.train()
+        batch_iterator = data_generator
+        if self._verbose > 0:
+            from tqdm import tqdm
+            batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout)
+        for batch_index, batch_data in enumerate(batch_iterator):
+            self.optimizer.zero_grad()
+            return_dict = self.forward(batch_data)
+            y_true_rep = return_dict['y_true'].expand(-1, self.num_experts)
+            loss = torch.functional.F.binary_cross_entropy(return_dict['expert_outs'], y_true_rep, reduction='mean') + \
+                self.add_regularization()
+            # loss = self.add_regularization() + \
+            #     self.loss_fn(return_dict['y_pred'], return_dict['y_true'], reduction='mean') 
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
+            self.optimizer.step()
+            epoch_loss += loss.item()
+            self.update_experts_weights(return_dict['y_true'], return_dict['expert_outs'])
+        return epoch_loss / self._batches_per_epoch
+    
+    def save_weights(self, checkpoint):
+        state_dict = self.state_dict()
+        state_dict.update({'expert_weights': self.expert_weights})
+        torch.save(state_dict, checkpoint)
+
+    # def load_pretrain(self, checkpoint):
+    #     super().load_weights(checkpoint)
+
+    def load_weights(self, checkpoint):
+        self.to(self.device)
+        state_dict = torch.load(checkpoint, map_location='cpu')
+        self.load_state_dict(state_dict, strict=False)
+
+        # load expert_weights
+        self.expert_weights.add_((state_dict['expert_weights']).to(self.device) - self.expert_weights)
+
+
+class DCNMoE(BaseModel):
+    def __init__(self, 
+                 feature_map, 
+                 model_id="DCNMoE", 
+                 gpu=-1, 
+                 task="binary_classification",
+                 learning_rate=1e-3, 
+                 embedding_dim=10, 
+                 dnn_hidden_units=[], 
+                 dnn_activations="ReLU",
+                 crossing_layers=3, 
+                 net_dropout=0, 
+                 batch_norm=False, 
+                 embedding_regularizer=None, 
+                 net_regularizer=None, 
+                 num_experts=3,
+                 expert_shape=[],
+                 expert_loss_weights=2.0,
+                 **kwargs):
+        super(DCNMoE, self).__init__(feature_map, 
+                                  model_id=model_id, 
+                                  gpu=gpu, 
+                                  embedding_regularizer=embedding_regularizer, 
+                                  net_regularizer=net_regularizer,
+                                  **kwargs)
+        self.embedding_layer = EmbeddingLayer(feature_map, embedding_dim)
+        input_dim = feature_map.num_fields * embedding_dim
+        self.dnn = MLP_Layer(input_dim=input_dim,
+                             output_dim=None, # output hidden layer
+                             hidden_units=dnn_hidden_units,
+                             hidden_activations=dnn_activations,
+                             output_activation=None, 
+                             dropout_rates=net_dropout, 
+                             batch_norm=batch_norm, 
+                             use_bias=True) \
+                   if dnn_hidden_units else None # in case of only crossing net used
+        self.crossnet = CrossNet(input_dim, crossing_layers)
+        final_dim = input_dim
+        if isinstance(dnn_hidden_units, list) and len(dnn_hidden_units) > 0: # if use dnn
+            final_dim += dnn_hidden_units[-1]
+        self.experts = torch.nn.ModuleList([MLP_Layer(
+            input_dim=final_dim,
+            output_dim=1,
+            hidden_units=expert_shape,
+            hidden_activations='ReLU',
+            output_activation=None,
+            dropout_rates=net_dropout,
+            batch_norm=batch_norm,
+            use_bias=True
+        ) for _ in range(num_experts)])
+        self.gates = MLP_Layer(
+            input_dim=final_dim,
+            output_dim=num_experts,
+            hidden_units=expert_shape,
+            hidden_activations='ReLU',
+            output_activation=None,
+            dropout_rates=net_dropout,
+            batch_norm=batch_norm,
+            use_bias=True
+        )
+        self.softmax = torch.nn.Softmax(dim=-1)
+        self.expert_loss_weights = expert_loss_weights
+        self.output_activation = self.get_output_activation(task)
+        self.compile(kwargs["optimizer"], loss=kwargs["loss"], lr=learning_rate)
+        self.reset_parameters()
+        self.model_to_device()
+
+    def forward(self, inputs):
+        X, y = self.inputs_to_device(inputs)
+        feature_emb = self.embedding_layer(X)
+        flat_feature_emb = feature_emb.flatten(start_dim=1)
+        cross_out = self.crossnet(flat_feature_emb)
+        if self.dnn is not None:
+            dnn_out = self.dnn(flat_feature_emb)
+            final_out = torch.cat([cross_out, dnn_out], dim=-1)
+        else:
+            final_out = cross_out
+        
+        # Add experts
+        expert_outs = []
+        for expert in self.experts:
+            if self.output_activation is not None:
+                expert_outs.append(self.output_activation(expert(final_out)))
+            else:
+                expert_outs.append(expert(final_out))
+
+        expert_outs = torch.cat(expert_outs, -1)    # (B, num_experts)
+        expert_weights = self.softmax(self.gates(final_out)) # (B, num_experts)
+        self.expert_weights = torch.mean(expert_weights, dim=0)    # (num_experts)
+        y_pred = torch.mean(
+            expert_outs * self.expert_weights,
+            dim=-1,
+            keepdim=True
+        )   # (B, num_experts) -> (B, 1)
+
+        return_dict = {"y_true": y, "y_pred": y_pred}
+        return return_dict
+
+    def get_total_loss(self, inputs):
+        normal_loss = super().get_total_loss(inputs=inputs)
+        expert_loss = torch.std(self.expert_weights)
+        total_loss = normal_loss + self.expert_loss_weights * expert_loss
+
+        return total_loss
+
+
+class DCNIADM(BaseModel):
+    def __init__(self, 
+                 feature_map, 
+                 model_id="DCN", 
+                 gpu=-1, 
+                 task="binary_classification",
+                 learning_rate=1e-3, 
+                 embedding_dim=10, 
+                 dnn_hidden_units=[], 
+                 dnn_activations="ReLU",
+                 crossing_layers=3, 
+                 net_dropout=0, 
+                 batch_norm=False, 
+                 embedding_regularizer=None, 
+                 net_regularizer=None,
+                 adapt_dim=64, 
+                 num_experts=3,
+                 expert_shape=[],
+                 expert_loss_weights=2.0,
+                 **kwargs):
+        super(DCNIADM, self).__init__(feature_map, 
+                                  model_id=model_id, 
+                                  gpu=gpu, 
+                                  embedding_regularizer=embedding_regularizer, 
+                                  net_regularizer=net_regularizer,
+                                  **kwargs)
+        self.embedding_layer = EmbeddingLayer(feature_map, embedding_dim)
+        input_dim = feature_map.num_fields * embedding_dim
+        self.dnn = MLP_Layer(input_dim=input_dim,
+                             output_dim=None, # output hidden layer
+                             hidden_units=dnn_hidden_units,
+                             hidden_activations=dnn_activations,
+                             output_activation=None, 
+                             dropout_rates=net_dropout, 
+                             batch_norm=batch_norm, 
+                             use_bias=True) \
+                   if dnn_hidden_units else None # in case of only crossing net used
+        self.crossnet = CrossNet(input_dim, crossing_layers)
+        final_dim = input_dim
+        if isinstance(dnn_hidden_units, list) and len(dnn_hidden_units) > 0: # if use dnn
+            final_dim += dnn_hidden_units[-1]
+        self.adapt_layer = torch.nn.Linear(final_dim, adapt_dim)
+        self.iadm_layers = torch.nn.ModuleList([
+            torch.nn.Linear(adapt_dim, adapt_dim)
+            for _ in range(num_experts)
+        ])
+        self.experts = torch.nn.ModuleList([MLP_Layer(
+            input_dim=adapt_dim,
+            output_dim=1,
+            hidden_units=expert_shape,
+            hidden_activations='ReLU',
+            output_activation=None,
+            dropout_rates=net_dropout,
+            batch_norm=batch_norm,
+            use_bias=True
+        ) for _ in range(num_experts)])
+        self.gates = MLP_Layer(
+            input_dim=adapt_dim,
+            output_dim=num_experts,
+            hidden_units=expert_shape,
+            hidden_activations='ReLU',
+            output_activation=None,
+            dropout_rates=net_dropout,
+            batch_norm=batch_norm,
+            use_bias=True
+        )
+        self.softmax = torch.nn.Softmax(dim=-1)
+        self.relu = torch.nn.ReLU()
+        self.expert_loss_weights = expert_loss_weights
+        self.output_activation = self.get_output_activation(task)
+        self.compile(kwargs["optimizer"], loss=kwargs["loss"], lr=learning_rate)
+        self.reset_parameters()
+        self.model_to_device()
+
+    def forward(self, inputs):
+        X, y = self.inputs_to_device(inputs)
+        feature_emb = self.embedding_layer(X)
+        flat_feature_emb = feature_emb.flatten(start_dim=1)
+        cross_out = self.crossnet(flat_feature_emb)
+        if self.dnn is not None:
+            dnn_out = self.dnn(flat_feature_emb)
+            final_out = torch.cat([cross_out, dnn_out], dim=-1)
+        else:
+            final_out = cross_out
+        
+        final_out = self.adapt_layer(final_out) # (B, adapt_size)
+        expert_weights = self.softmax(self.gates(final_out)) # (B, num_experts)
+        self.expert_weights = torch.mean(expert_weights, dim=0)    # (num_experts)
+        # Add experts
+        expert_outs = []
+        for iadm_layer, expert in zip(self.iadm_layers, self.experts):
+            final_out = self.relu(iadm_layer(final_out))    # (B, adapt_size)
+            if self.output_activation is not None:
+                expert_outs.append(self.output_activation(expert(final_out)))
+            else:
+                expert_outs.append(expert(final_out))            
+
+        expert_outs = torch.cat(expert_outs, -1)    # (B, num_experts)
+        y_pred = torch.mean(
+            expert_outs * self.expert_weights,
+            dim=-1,
+            keepdim=True
+        )   # (B, num_experts) -> (B, 1)
+
+        return_dict = {"y_true": y, "y_pred": y_pred}
+        return return_dict
+
+    def get_total_loss(self, inputs):
+        normal_loss = super().get_total_loss(inputs=inputs)
+        expert_loss = torch.std(self.expert_weights)
+        total_loss = normal_loss + self.expert_loss_weights * expert_loss
+
+        return total_loss
 

@@ -178,6 +178,8 @@ class BaseModel(nn.Module):
         for epoch in range(epochs):
             epoch_loss = self.train_one_epoch_custom(data_generator, epoch)
             logging.info("Train loss: {:.6f}".format(epoch_loss))
+            if hasattr(self, 'expert_weights'):
+                logging.info("Experts' weights: {}".format(self.expert_weights))
         logging.info("Current data block data finished.")
 
     def fit_generator(self, data_generator, epochs=1, validation_data=None,
@@ -206,6 +208,8 @@ class BaseModel(nn.Module):
         for epoch in range(epochs):
             epoch_loss = self.train_one_epoch(data_generator, epoch)
             logging.info("Train loss: {:.6f}".format(epoch_loss))
+            if hasattr(self, 'expert_weights'):
+                logging.info("Experts' weights: {}".format(self.expert_weights))
             if self._stop_training:
                 break
             else:
