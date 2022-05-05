@@ -15,10 +15,12 @@
 # =========================================================================
 
 import sys
+import numpy as np
 import torch
 from torch import nn
 from fuxictr.pytorch.models import BaseModel
 from fuxictr.pytorch.layers import EmbeddingLayer, MLP_Layer, CrossNet
+from sklearn.metrics import roc_auc_score, log_loss, accuracy_score
 import logging
 
 class DCN(BaseModel):
@@ -235,6 +237,55 @@ class DCNAdaMoE(DCNHard):
 
         return_dict = {"y_true": y, "y_pred": y_pred, "expert_outs": expert_outs}
         return return_dict
+
+    def evaluate_metrics(self, y_true, y_pred, expert_outs, metrics, **kwargs):
+        result = dict()
+        for metric in metrics:
+            if metric in ['logloss', 'binary_crossentropy']:
+                label = y_true[:, None]
+                expert_outs[expert_outs < 1e-7] = 1e-7
+                expert_outs[expert_outs > (1 - 1e-7)] = 1 - 1e-7
+                log_loss = -label * np.log(expert_outs) - (1 - label) * np.log(1 - expert_outs)
+                log_loss = np.min(log_loss, axis=-1)
+                result[metric] = np.mean(log_loss)
+            elif metric == 'AUC':
+                result[metric] = roc_auc_score(y_true, y_pred)
+            elif metric == "ACC":
+                y_pred = np.argmax(y_pred, axis=1)
+                result[metric] = accuracy_score(y_true, y_pred)
+            else:
+                assert "group_index" in kwargs, "group_index is required for GAUC"
+                group_index = kwargs["group_index"]
+                if metric == "GAUC":
+                    pass
+                elif metric == "NDCG":
+                    pass
+                elif metric == "MRR":
+                    pass
+                elif metric == "HitRate":
+                    pass
+        logging.info('[Metrics] ' + ' - '.join('{}: {:.6f}'.format(k, v) for k, v in result.items()))
+        return result
+
+    def evaluate_generator(self, data_generator):
+        self.eval()  # set to evaluation mode
+        with torch.no_grad():
+            y_pred = []
+            y_true = []
+            expert_outs = []
+            if self._verbose > 0:
+                from tqdm import tqdm
+                data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
+            for batch_data in data_generator:
+                return_dict = self.forward(batch_data)
+                y_pred.extend(return_dict["y_pred"].data.cpu().numpy().reshape(-1))
+                y_true.extend(batch_data[1].data.cpu().numpy().reshape(-1))
+                expert_outs.append(return_dict['expert_outs'].clone().detach().cpu().numpy())
+            y_pred = np.array(y_pred, np.float64)
+            y_true = np.array(y_true, np.float64)
+            expert_outs = np.concatenate(expert_outs, axis=0)   # (N, num_experts)
+            val_logs = self.evaluate_metrics(y_true, y_pred, expert_outs, self._validation_metrics)
+            return val_logs
 
     def update_experts_weights(self, y_true, expert_outs):
         nt = torch.tensor(y_true.shape[0], device=self.device)
