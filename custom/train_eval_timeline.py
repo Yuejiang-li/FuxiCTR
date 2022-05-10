@@ -16,17 +16,18 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--expid', type=str, default='FM_test', help='The experiment id to run.')
     parser.add_argument('--dataset', type=str, default='avazu', choices=['avazu', 'taobao'])
+    parser.add_argument('--gpu', type=int, default=-1)
     
     args = vars(parser.parse_args())
 
     return args
 
 def train_one_dataset(model, data_dir, dataset,
-    batch_size, epochs, verbose):
+    batch_size, epochs, verbose, shuffle):
     train_gen = datasets.h5_train_generator(
         train_data=os.path.join(data_dir, dataset),
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle,
     )
     model.fit_generator_stream(train_gen, epochs=epochs, verbose=verbose)
 
@@ -53,6 +54,7 @@ if __name__ == '__main__':
     else:
         config_dir = 'avazu_all_config'
     params = load_config(config_dir, experiment_id)
+    params['gpu'] = args['gpu']
 
     # set up logger and random seed
     set_logger(params)
@@ -91,7 +93,7 @@ if __name__ == '__main__':
         if i == 0:
             # The initial dataset dose not need validation.
             train_one_dataset(model, data_dir, timeline_dataset,
-                params["batch_size"], 1, params['verbose'])
+                params["batch_size"], params['epochs'], params['verbose'], params['shuffle'])
         else:
             # First use new data to evaluate.
             eval_res = eval_one_dataset(model, feature_map, data_dir, timeline_dataset,
@@ -101,7 +103,7 @@ if __name__ == '__main__':
 
             # Next train with new data
             train_one_dataset(model, data_dir, timeline_dataset,
-                params["batch_size"], 1, params['verbose'])
+                params["batch_size"], params['epochs'], params['verbose'], params['shuffle'])
 
     # Save model.
     model.save_weights(model.checkpoint)
