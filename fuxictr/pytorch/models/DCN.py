@@ -408,7 +408,7 @@ class DCNAdaMoECE(DCNAdaMoE):
         y_true: shape = (B, 1)
         expert_outs: shape = (B, n_experts)
         """
-        y_tilde = y_true * expert_outs + (1 - y_true) * expert_outs # (B, n_experts)
+        y_tilde = y_true * expert_outs + (1 - y_true) * (1 - expert_outs) # (B, n_experts)
         y_tilde = torch.div(y_tilde, torch.sum(y_tilde, dim=-1, keepdim=True))  # Normalize
         w_cur = torch.mean(y_tilde, dim=0, keepdim=True)    # (1, n_experts)
 
