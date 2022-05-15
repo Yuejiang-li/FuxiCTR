@@ -365,6 +365,59 @@ class DCNAdaMoE(DCNHard):
         self.expert_weights.add_((state_dict['expert_weights']).to(self.device) - self.expert_weights)
 
 
+class DCNAdaMoECE(DCNAdaMoE):
+    def __init__(self, 
+                 feature_map, 
+                 model_id="DCNAdaMoECE", 
+                 gpu=-1, 
+                 task="binary_classification",
+                 learning_rate=1e-3, 
+                 embedding_dim=10, 
+                 dnn_hidden_units=[], 
+                 dnn_activations="ReLU",
+                 crossing_layers=3, 
+                 net_dropout=0, 
+                 batch_norm=False, 
+                 embedding_regularizer=None, 
+                 net_regularizer=None, 
+                 num_experts=3,
+                 expert_shape=[],
+                 decay_weights=0.1,
+                 **kwargs):
+
+        super(DCNAdaMoECE, self).__init__(feature_map=feature_map,
+                                          model_id=model_id,
+                                          gpu=gpu,
+                                          task=task,
+                                          learning_rate=learning_rate,
+                                          embedding_dim=embedding_dim,
+                                          dnn_hidden_units=dnn_hidden_units,
+                                          dnn_activations=dnn_activations,
+                                          crossing_layers=crossing_layers,
+                                          net_dropout=net_dropout,
+                                          batch_norm=batch_norm,
+                                          embedding_regularizer=embedding_regularizer,
+                                          net_regularizer=net_regularizer,
+                                          num_experts=num_experts,
+                                          expert_shape=expert_shape,
+                                          decay_weights=decay_weights,
+                                          **kwargs)
+
+    def update_experts_weights(self, y_true, expert_outs):
+        """
+        y_true: shape = (B, 1)
+        expert_outs: shape = (B, n_experts)
+        """
+        y_tilde = y_true * expert_outs + (1 - y_true) * expert_outs # (B, n_experts)
+        y_tilde = torch.div(y_tilde, torch.sum(y_tilde, dim=-1, keepdim=True))  # Normalize
+        w_cur = torch.mean(y_tilde, dim=0, keepdim=True)    # (1, n_experts)
+
+        self.expert_weights = torch.div(
+            self.decay_weights * self.expert_weights + w_cur,
+            torch.sum(self.decay_weights * self.expert_weights + w_cur)
+        )
+        self.expert_weights = self.expert_weights.detach()
+
 class DCNMoE(BaseModel):
     def __init__(self, 
                  feature_map, 
