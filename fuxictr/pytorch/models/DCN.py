@@ -229,7 +229,7 @@ class DCNAdaMoE(DCNHard):
         X, y = self.inputs_to_device(inputs)
         expert_outs = self.experts_forward(X, y)    # (B, num_experts)
 
-        y_pred = torch.mean(
+        y_pred = torch.sum(
             expert_outs * self.expert_weights,
             dim=-1,
             keepdim=True
@@ -402,6 +402,30 @@ class DCNAdaMoECE(DCNAdaMoE):
                                           expert_shape=expert_shape,
                                           decay_weights=decay_weights,
                                           **kwargs)
+    
+    def train_one_epoch_custom(self, data_generator, epoch):
+        epoch_loss = 0
+        self.train()
+        batch_iterator = data_generator
+        if self._verbose > 0:
+            from tqdm import tqdm
+            batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout)
+        for batch_index, batch_data in enumerate(batch_iterator):
+            self.optimizer.zero_grad()
+            return_dict = self.forward(batch_data)
+            if not ((return_dict['y_pred'] > 0.0) & (return_dict['y_pred'] <1.0)).all():
+                logging.info(f"expert_outs: {return_dict['expert_outs']}")
+                logging.info(f"expert_weights: {self.expert_weights}")
+                logging.info(f"Anamoly: {return_dict['y_pred']}")
+            assert ((return_dict['y_pred'] > 0.0) & (return_dict['y_pred'] <1.0)).all()
+            loss = torch.functional.F.binary_cross_entropy(return_dict['y_pred'], return_dict['y_true'], reduction='mean') + \
+                self.add_regularization()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
+            self.optimizer.step()
+            epoch_loss += loss.item()
+            self.update_experts_weights(return_dict['y_true'], return_dict['expert_outs'])
+        return epoch_loss / self._batches_per_epoch
 
     def update_experts_weights(self, y_true, expert_outs):
         """
@@ -409,7 +433,7 @@ class DCNAdaMoECE(DCNAdaMoE):
         expert_outs: shape = (B, n_experts)
         """
         y_tilde = y_true * expert_outs + (1 - y_true) * (1 - expert_outs) # (B, n_experts)
-        y_tilde = torch.div(y_tilde, torch.sum(y_tilde, dim=-1, keepdim=True))  # Normalize
+        y_tilde = torch.div(y_tilde, torch.sum(y_tilde, dim=-1, keepdim=True) + 1e-8)  # Normalize
         w_cur = torch.mean(y_tilde, dim=0, keepdim=True)    # (1, n_experts)
 
         self.expert_weights = torch.div(
