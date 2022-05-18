@@ -467,6 +467,7 @@ class DCNMoE(BaseModel):
                                   embedding_regularizer=embedding_regularizer, 
                                   net_regularizer=net_regularizer,
                                   **kwargs)
+        self.num_experts = num_experts
         self.embedding_layer = EmbeddingLayer(feature_map, embedding_dim)
         input_dim = feature_map.num_fields * embedding_dim
         self.dnn = MLP_Layer(input_dim=input_dim,
@@ -542,8 +543,11 @@ class DCNMoE(BaseModel):
 
     def get_total_loss(self, inputs):
         normal_loss = super().get_total_loss(inputs=inputs)
-        expert_loss = torch.std(self.expert_weights)
-        total_loss = normal_loss + self.expert_loss_weights * expert_loss
+        if self.num_experts == 1:
+            total_loss = normal_loss
+        else:
+            expert_loss = torch.std(self.expert_weights)
+            total_loss = normal_loss + self.expert_loss_weights * expert_loss
 
         return total_loss
 
@@ -574,6 +578,7 @@ class DCNIADM(BaseModel):
                                   embedding_regularizer=embedding_regularizer, 
                                   net_regularizer=net_regularizer,
                                   **kwargs)
+        self.num_experts = num_experts
         self.embedding_layer = EmbeddingLayer(feature_map, embedding_dim)
         input_dim = feature_map.num_fields * embedding_dim
         self.dnn = MLP_Layer(input_dim=input_dim,
@@ -657,8 +662,11 @@ class DCNIADM(BaseModel):
 
     def get_total_loss(self, inputs):
         normal_loss = super().get_total_loss(inputs=inputs)
-        expert_loss = torch.std(self.expert_weights)
-        total_loss = normal_loss + self.expert_loss_weights * expert_loss
+        if self.num_experts == 1:
+            total_loss = normal_loss
+        else:
+            expert_loss = torch.std(self.expert_weights)
+            total_loss = normal_loss + self.expert_loss_weights * expert_loss
 
         return total_loss
 
