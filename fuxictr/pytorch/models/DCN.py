@@ -532,7 +532,7 @@ class DCNMoE(BaseModel):
         expert_outs = torch.cat(expert_outs, -1)    # (B, num_experts)
         expert_weights = self.softmax(self.gates(final_out)) # (B, num_experts)
         self.expert_weights = torch.mean(expert_weights, dim=0)    # (num_experts)
-        y_pred = torch.mean(
+        y_pred = torch.sum(
             expert_outs * self.expert_weights,
             dim=-1,
             keepdim=True
@@ -651,7 +651,7 @@ class DCNIADM(BaseModel):
                 expert_outs.append(expert(final_out))            
 
         expert_outs = torch.cat(expert_outs, -1)    # (B, num_experts)
-        y_pred = torch.mean(
+        y_pred = torch.sum(
             expert_outs * self.expert_weights,
             dim=-1,
             keepdim=True
