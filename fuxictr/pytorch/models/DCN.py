@@ -533,10 +533,10 @@ class DCNMoE(BaseModel):
         expert_weights = self.softmax(self.gates(final_out)) # (B, num_experts)
         self.expert_weights = torch.mean(expert_weights, dim=0)    # (num_experts)
         y_pred = torch.sum(
-            expert_outs * self.expert_weights,
+            expert_outs * expert_weights,
             dim=-1,
             keepdim=True
-        )   # (B, num_experts) -> (B, 1)
+        ).clamp(0.0, 1.0)   # (B, num_experts) -> (B, 1)
 
         return_dict = {"y_true": y, "y_pred": y_pred}
         return return_dict
@@ -652,10 +652,10 @@ class DCNIADM(BaseModel):
 
         expert_outs = torch.cat(expert_outs, -1)    # (B, num_experts)
         y_pred = torch.sum(
-            expert_outs * self.expert_weights,
+            expert_outs * expert_outs,
             dim=-1,
             keepdim=True
-        )   # (B, num_experts) -> (B, 1)
+        ).clamp(0.0, 1.0)   # (B, num_experts) -> (B, 1)
 
         return_dict = {"y_true": y, "y_pred": y_pred}
         return return_dict
